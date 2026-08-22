@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>タイムスケジュール</title>
+
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#4F46E5" />
+
+<!-- iOS PWA support -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="スケジュール" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+<link rel="icon" href="icons/icon-192.png" />
+
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div id="app">
+
+  <header class="topbar">
+    <button id="prevDay" class="icon-btn" aria-label="前の日">‹</button>
+    <div class="date-label" id="dateLabel">
+      <span id="dateMain">8月22日(土)</span>
+      <span id="todayBadge" class="today-badge" hidden>今日</span>
+    </div>
+    <button id="nextDay" class="icon-btn" aria-label="次の日">›</button>
+    <button id="settingsBtn" class="icon-btn settings-btn" aria-label="設定">⚙</button>
+  </header>
+
+  <div id="notifyBanner" class="notify-banner" hidden>
+    <span>通知を有効にすると、開始時刻にアプリ内でお知らせします。</span>
+    <button id="notifyEnableBtn">通知を許可</button>
+    <button id="notifyDismissBtn" class="link-btn">後で</button>
+  </div>
+
+  <main class="timeline-wrap" id="timelineWrap">
+    <div class="timeline" id="timeline">
+      <!-- hour rows and events injected by JS -->
+    </div>
+  </main>
+
+  <button id="addBtn" class="fab" aria-label="予定を追加">＋</button>
+</div>
+
+<!-- Add/Edit Event Modal -->
+<div id="modalOverlay" class="modal-overlay" hidden>
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="modalTitle">予定を追加</h2>
+      <button id="modalClose" class="icon-btn">✕</button>
+    </div>
+
+    <div class="modal-body">
+      <label class="field">
+        <span>タイトル</span>
+        <input type="text" id="fieldTitle" placeholder="例: チェロ練習" />
+      </label>
+
+      <div class="field">
+        <span>種類</span>
+        <div class="segmented" id="typeSegmented">
+          <button type="button" class="seg-btn active" data-type="once">単発</button>
+          <button type="button" class="seg-btn" data-type="recurring">繰り返し</button>
+        </div>
+      </div>
+
+      <label class="field" id="dateField">
+        <span>日付</span>
+        <input type="date" id="fieldDate" />
+      </label>
+
+      <div class="field" id="daysField" hidden>
+        <span>曜日</span>
+        <div class="weekday-picker" id="weekdayPicker">
+          <button type="button" class="day-chip" data-day="0">日</button>
+          <button type="button" class="day-chip" data-day="1">月</button>
+          <button type="button" class="day-chip" data-day="2">火</button>
+          <button type="button" class="day-chip" data-day="3">水</button>
+          <button type="button" class="day-chip" data-day="4">木</button>
+          <button type="button" class="day-chip" data-day="5">金</button>
+          <button type="button" class="day-chip" data-day="6">土</button>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <label class="field">
+          <span>開始</span>
+          <input type="time" id="fieldStart" value="09:00" />
+        </label>
+        <label class="field">
+          <span>終了(任意)</span>
+          <input type="time" id="fieldEnd" />
+        </label>
+      </div>
+
+      <label class="field">
+        <span>色</span>
+        <div class="color-picker" id="colorPicker">
+          <button type="button" class="color-dot" style="--c:#4F46E5" data-color="#4F46E5"></button>
+          <button type="button" class="color-dot" style="--c:#0EA5E9" data-color="#0EA5E9"></button>
+          <button type="button" class="color-dot" style="--c:#10B981" data-color="#10B981"></button>
+          <button type="button" class="color-dot" style="--c:#F59E0B" data-color="#F59E0B"></button>
+          <button type="button" class="color-dot" style="--c:#EF4444" data-color="#EF4444"></button>
+          <button type="button" class="color-dot" style="--c:#EC4899" data-color="#EC4899"></button>
+        </div>
+      </label>
+
+      <label class="field checkbox-field">
+        <input type="checkbox" id="fieldNotify" checked />
+        <span>開始時刻に通知する</span>
+      </label>
+    </div>
+
+    <div class="modal-footer">
+      <button id="deleteBtn" class="btn danger" hidden>削除</button>
+      <div class="spacer"></div>
+      <button id="cancelBtn" class="btn">キャンセル</button>
+      <button id="saveBtn" class="btn primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
