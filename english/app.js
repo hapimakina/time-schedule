@@ -7,6 +7,12 @@
   // 正解するたびに次の出題までの日数が伸びる（box 0〜5）
   const INTERVALS = [0, 1, 3, 7, 14, 30];
   const LEARNED_BOX = 3;
+  // 操作の間隔がこれより空いた分は学習時間に数えない（放置・よそ見の分を除くため）
+  const IDLE_CAP_MS = 60 * 1000;
+  const GOAL_OPTIONS = [5, 10, 15, 30];
+  const DEFAULT_GOAL = 15;
+  // 1回の練習（10問）はおよそ5分
+  const MIN_PER_STEP = 5;
 
   const { categories, words, sentences } = window.EN_DATA;
   const wordItems = words.map((w) => ({ ...w, id: "w:" + w.en }));
@@ -67,9 +73,15 @@
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       const p = raw ? JSON.parse(raw) : null;
-      if (p && p.items) return p;
+      if (p && p.items) return withDefaults(p);
     } catch {}
-    return { items: {}, days: [], answered: 0, correct: 0 };
+    return withDefaults({ items: {}, days: [], answered: 0, correct: 0 });
+  }
+  function withDefaults(p) {
+    if (!p.time) p.time = {}; // 日付 -> 学習秒数
+    if (!p.goalMin) p.goalMin = DEFAULT_GOAL;
+    if (!p.menu) p.menu = null; // { date, steps: [modeId], done }
+    return p;
   }
   function saveProgress() {
     try {
@@ -179,6 +191,87 @@
     return n;
   }
 
+  function modeCounts(modeId) {
+    const all = modeId.startsWith("word") ? wordItems : sentItems;
+    let seen = 0;
+    let learned = 0;
+    for (const it of all) {
+      const r = getRec(modeId, it);
+      if (r) {
+        seen += 1;
+        if (r.box >= LEARNED_BOX) learned += 1;
+      }
+    }
+    return { all: all.length, seen, learned };
+  }
+
+  // ---------- study time ----------
+  // 練習中の操作（タップ・キー入力）の間隔を足し上げる。間隔は IDLE_CAP_MS で頭打ち。
+  let lastActive = 0;
+
+  function touchActivity() {
+    if (!session) return;
+    const now = Date.now();
+    if (lastActive) {
+      const k = todayKey();
+      progress.time[k] = (progress.time[k] || 0) + Math.min(now - lastActive, IDLE_CAP_MS) / 1000;
+      saveProgress();
+    }
+    lastActive = now;
+  }
+  function secondsOn(key) {
+    return progress.time[key] || 0;
+  }
+  function recentSeconds(days) {
+    let s = 0;
+    for (let i = 0; i < days; i++) s += secondsOn(addDaysKey(-i));
+    return s;
+  }
+  function totalSeconds() {
+    return Object.values(progress.time).reduce((a, b) => a + b, 0);
+  }
+  function fmtDur(sec) {
+    const m = Math.floor(sec / 60);
+    if (m < 60) return `${m}分`;
+    const h = Math.floor(m / 60);
+    return m % 60 ? `${h}時間${m % 60}分` : `${h}時間`;
+  }
+
+  // ---------- daily menu ----------
+  // 進み具合に合わせて段階を決め、目標時間ぶんの練習を並べる。復習があればそれを先頭に入れる。
+  function buildMenu() {
+    let stage;
+    let base;
+    if (modeCounts("wordRead").seen < 30) {
+      stage = "ステップ1：単語に慣れる";
+      base = ["wordRead", "wordType"];
+    } else if (modeCounts("wordType").learned < 20) {
+      stage = "ステップ2：単語を増やして文に触れる";
+      base = ["wordRead", "wordType", "sentRead"];
+    } else if (modeCounts("sentCopy").learned < 15) {
+      stage = "ステップ3：文を組み立てて打つ";
+      base = ["wordType", "sentOrder", "sentCopy"];
+    } else {
+      stage = "ステップ4：文を思い出して打つ";
+      base = ["wordType", "sentCopy", "sentRecall"];
+    }
+    const n = Math.max(2, Math.round(progress.goalMin / MIN_PER_STEP));
+    const review = Object.keys(MODES)
+      .filter((id) => !base.includes(id) && dueCount(id) > 0)
+      .sort((a, b) => dueCount(b) - dueCount(a))
+      .slice(0, 1);
+    const steps = review.slice();
+    while (steps.length < n) steps.push(base[(steps.length - review.length) % base.length]);
+    return { date: todayKey(), stage, steps, done: 0 };
+  }
+  function todayMenu() {
+    if (!progress.menu || progress.menu.date !== todayKey()) {
+      progress.menu = buildMenu();
+      saveProgress();
+    }
+    return progress.menu;
+  }
+
   // ---------- helpers ----------
   const $ = (id) => document.getElementById(id);
   const main = $("main");
@@ -242,12 +335,26 @@
   // ---------- home ----------
   function renderHome() {
     session = null;
+    lastActive = 0;
     backBtn.hidden = true;
     topbarTitle.textContent = "えいご練習";
     topbarProgress.textContent = "";
 
     const st = streak();
-    const todayCount = progress.days.includes(todayKey()) ? "今日も練習済み ✓" : "今日はまだ練習していません";
+    const todaySec = secondsOn(todayKey());
+    const goalSec = progress.goalMin * 60;
+    const goalPct = Math.min(100, Math.round((todaySec / goalSec) * 100));
+    const goalText = todaySec >= goalSec ? "今日の目標達成 ✓" : `目標 ${progress.goalMin}分まであと ${Math.ceil((goalSec - todaySec) / 60)}分`;
+
+    const menu = todayMenu();
+    const menuDone = menu.done >= menu.steps.length;
+    const menuSteps = menu.steps
+      .map((id, i) => {
+        const state = i < menu.done ? "done" : i === menu.done ? "next" : "";
+        return `<li class="menu-step ${state}"><span class="menu-mark">${i < menu.done ? "✓" : i + 1}</span>${MODES[id].icon} ${MODES[id].title}</li>`;
+      })
+      .join("");
+
     const catChips = [{ id: "all", label: "すべて" }, ...categories]
       .map((c) => `<button class="chip ${selectedCat === c.id ? "active" : ""}" data-cat="${c.id}">${esc(c.label)}</button>`)
       .join("");
@@ -267,19 +374,39 @@
 
     main.innerHTML = `
       <section class="summary">
-        <div class="summary-main"><span class="streak-num">${st}</span><span>日連続</span></div>
-        <div class="summary-sub">${todayCount}</div>
+        <div class="summary-row">
+          <div class="summary-cell"><span class="streak-num">${st}</span><span>日連続</span></div>
+          <div class="summary-cell"><span class="streak-num">${fmtDur(todaySec)}</span><span>今日</span></div>
+        </div>
+        <div class="bar"><div class="bar-fill" style="width:${goalPct}%"></div></div>
+        <div class="summary-sub">${goalText}・合計 ${fmtDur(totalSeconds())}</div>
         <button class="link-btn" id="statsBtn">記録を見る</button>
       </section>
 
-      <h2 class="section-title">単語</h2>
+      <section class="menu-card">
+        <div class="menu-head">
+          <span class="menu-title">今日のメニュー</span>
+          <span class="menu-stage">${esc(menu.stage)}</span>
+        </div>
+        <ol class="menu-steps">${menuSteps}</ol>
+        ${
+          menuDone
+            ? `<div class="menu-complete">今日のメニューは完了です。おつかれさまでした。</div>`
+            : `<button class="btn primary wide" id="menuBtn">${menu.done ? "続きから始める" : "メニューを始める"}</button>`
+        }
+      </section>
+
+      <h2 class="section-title">自由に練習する</h2>
+
+      <h3 class="sub-title">単語</h3>
       <div class="chips" id="catChips">${catChips}</div>
       <div class="mode-list">${card("wordRead")}${card("wordType")}</div>
 
-      <h2 class="section-title">短い文</h2>
+      <h3 class="sub-title">短い文</h3>
       <div class="mode-list">${card("sentRead")}${card("sentOrder")}${card("sentCopy")}${card("sentRecall")}</div>
 
-      <p class="tip">はじめての方は「単語を読む」→「単語を打つ」→「文を写して打つ」の順がおすすめです。<br>
+      <p class="tip">迷ったら「今日のメニュー」から始めてください。進み具合に合わせて内容が変わります。<br>
+      学習時間は練習中の操作から計算しています（1分以上操作がない間は数えません）。<br>
       打つ練習のときは、キーボードを英語（ABC）に切り替えてください。大文字・小文字と「. , ? !」は判定に含めません。</p>
     `;
 
@@ -294,19 +421,22 @@
       b.addEventListener("click", () => startSession(b.dataset.mode))
     );
     $("statsBtn").addEventListener("click", renderStats);
+    if (!menuDone) $("menuBtn").addEventListener("click", () => startSession(menu.steps[menu.done], true));
   }
 
   // ---------- session ----------
   let session = null;
 
-  function startSession(modeId) {
+  function startSession(modeId, fromMenu = false) {
     const items = pickItems(modeId);
     if (!items.length) {
       showToast("このカテゴリには問題がありません");
       return;
     }
+    lastActive = Date.now();
     session = {
       modeId,
+      fromMenu,
       mode: MODES[modeId],
       queue: items.slice(),
       total: items.length,
@@ -714,6 +844,19 @@
     const missed = results.filter((r) => r.grade === "again");
     const modeId = session.modeId;
     topbarProgress.textContent = "";
+    touchActivity();
+    lastActive = 0;
+
+    let nextStep = null;
+    if (session.fromMenu) {
+      const menu = todayMenu();
+      if (menu.done < menu.steps.length) menu.done += 1;
+      saveProgress();
+      if (menu.done < menu.steps.length) nextStep = menu.steps[menu.done];
+    }
+    const menuNote = session.fromMenu
+      ? `<p class="tip center">${nextStep ? `メニュー ${todayMenu().done} / ${todayMenu().steps.length} 完了` : "今日のメニューはすべて完了です。"}・今日の学習 ${fmtDur(secondsOn(todayKey()))}</p>`
+      : `<p class="tip center">今日の学習 ${fmtDur(secondsOn(todayKey()))}</p>`;
 
     main.innerHTML = `
       <section class="result">
@@ -729,13 +872,19 @@
              <p class="tip">間違えた問題は、次の練習で優先して出題されます。</p>`
           : `<p class="tip center">全問正解です。次は別の練習にも挑戦してみましょう。</p>`
       }
+      ${menuNote}
       <div class="actions">
         <button class="btn" id="homeBtn">ホームへ</button>
-        <button class="btn primary" id="againBtn">続けて練習</button>
+        ${
+          nextStep
+            ? `<button class="btn primary" id="nextStepBtn">次へ：${MODES[nextStep].title}</button>`
+            : `<button class="btn primary" id="againBtn">続けて練習</button>`
+        }
       </div>
     `;
     $("homeBtn").addEventListener("click", renderHome);
-    $("againBtn").addEventListener("click", () => startSession(modeId));
+    if (nextStep) $("nextStepBtn").addEventListener("click", () => startSession(nextStep, true));
+    else $("againBtn").addEventListener("click", () => startSession(modeId));
     session = null;
   }
 
@@ -748,26 +897,58 @@
 
     const rows = Object.keys(MODES)
       .map((id) => {
-        const all = id.startsWith("word") ? wordItems : sentItems;
-        let seen = 0;
-        let learned = 0;
-        for (const it of all) {
-          const r = getRec(id, it);
-          if (r) {
-            seen += 1;
-            if (r.box >= LEARNED_BOX) learned += 1;
-          }
-        }
-        const pct = Math.round((learned / all.length) * 100);
+        const { all, seen, learned } = modeCounts(id);
+        const pct = Math.round((learned / all) * 100);
         return `<div class="stat-row">
-          <div class="stat-head"><span>${MODES[id].icon} ${MODES[id].title}</span><span>${learned} / ${all.length}</span></div>
+          <div class="stat-head"><span>${MODES[id].icon} ${MODES[id].title}</span><span>${learned} / ${all}</span></div>
           <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
           <div class="stat-sub">出題済み ${seen}・覚えた ${learned}</div>
         </div>`;
       })
       .join("");
 
+    // 直近7日の学習時間。目標時間を超えた日は色を変える
+    const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
+    const goalSec = progress.goalMin * 60;
+    const days7 = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      days7.push({ d, sec: secondsOn(dateKey(d)) });
+    }
+    const maxSec = Math.max(goalSec, ...days7.map((x) => x.sec));
+    const goalLine = Math.round((goalSec / maxSec) * 100);
+    const chart = days7
+      .map(({ d, sec }, i) => {
+        const h = Math.round((sec / maxSec) * 100);
+        return `<div class="day-col">
+          <div class="day-val">${sec >= 60 ? Math.floor(sec / 60) : ""}</div>
+          <div class="day-bar-wrap"><div class="goal-mark" style="bottom:${goalLine}%"></div><div class="day-bar ${sec >= goalSec ? "met" : ""}" style="height:${h}%"></div></div>
+          <div class="day-label ${i === 6 ? "today" : ""}">${i === 6 ? "今日" : WEEKDAYS[d.getDay()]}</div>
+        </div>`;
+      })
+      .join("");
+    const goalChips = GOAL_OPTIONS.map(
+      (m) => `<button class="chip ${progress.goalMin === m ? "active" : ""}" data-goal="${m}">${m}分</button>`
+    ).join("");
+
     main.innerHTML = `
+      <h2 class="section-title first">学習時間</h2>
+      <section class="stats-grid three">
+        <div class="stat-box"><div class="stat-num">${fmtDur(secondsOn(todayKey()))}</div><div class="stat-cap">今日</div></div>
+        <div class="stat-box"><div class="stat-num">${fmtDur(recentSeconds(7))}</div><div class="stat-cap">直近7日</div></div>
+        <div class="stat-box"><div class="stat-num">${fmtDur(totalSeconds())}</div><div class="stat-cap">合計</div></div>
+      </section>
+      <div class="week-chart">
+        ${chart}
+      </div>
+      <div class="stat-sub center">棒の上の数字は分。点線が目標、緑の棒は目標を達成した日です。</div>
+
+      <h2 class="section-title">1日の目標時間</h2>
+      <div class="chips" id="goalChips">${goalChips}</div>
+      <p class="tip">目標時間に合わせて「今日のメニュー」の量が変わります（1回の練習 ≒ ${MIN_PER_STEP}分）。</p>
+
+      <h2 class="section-title">これまでの記録</h2>
       <section class="stats-grid">
         <div class="stat-box"><div class="stat-num">${streak()}</div><div class="stat-cap">日連続</div></div>
         <div class="stat-box"><div class="stat-num">${progress.days.length}</div><div class="stat-cap">練習した日</div></div>
@@ -781,9 +962,18 @@
         <button class="btn danger" id="resetBtn">記録をすべて消す</button>
       </div>
     `;
+    $("goalChips").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-goal]");
+      if (!b) return;
+      progress.goalMin = Number(b.dataset.goal);
+      // まだ手をつけていなければ、今日のメニューを新しい目標で作り直す
+      if (progress.menu && progress.menu.done === 0) progress.menu = null;
+      saveProgress();
+      renderStats();
+    });
     $("resetBtn").addEventListener("click", () => {
       if (!confirm("学習の記録をすべて消します。よろしいですか？")) return;
-      progress = { items: {}, days: [], answered: 0, correct: 0 };
+      progress = withDefaults({ items: {}, days: [], answered: 0, correct: 0, goalMin: progress.goalMin });
       saveProgress();
       showToast("記録を消しました");
       renderStats();
@@ -791,6 +981,13 @@
   }
 
   backBtn.addEventListener("click", renderHome);
+
+  ["pointerdown", "keydown", "input"].forEach((t) => document.addEventListener(t, touchActivity, true));
+  document.addEventListener("visibilitychange", () => {
+    // アプリを閉じていた間は数えない
+    if (document.hidden) touchActivity();
+    lastActive = document.hidden ? 0 : session ? Date.now() : 0;
+  });
 
   // ---------- boot ----------
   renderHome();
